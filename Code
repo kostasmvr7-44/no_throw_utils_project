@@ -1,0 +1,197 @@
+# no_throw_utils.py
+# =================
+# Utilities that NEVER raise exceptions
+# Provides safe functions for JSON parsing, type casting, dict access,
+# retries, sleeping, environment variables, and general safe operations.
+
+import json
+import time
+import os
+from typing import Any, Callable
+
+# -----------------------------
+# Generic safe function wrapper
+# -----------------------------
+def safe(fn: Callable, fallback: Any = None) -> Any:
+    """
+    Executes a function and returns its result.
+    If an exception occurs, returns the fallback value instead.
+    """
+    try:
+        return fn()
+    except Exception:
+        return fallback
+
+
+# -----------------------------
+# JSON Utilities
+# -----------------------------
+def safe_json_parse(value: str, fallback: Any = None) -> Any:
+    """
+    Safely parses a JSON string into a Python object.
+    Returns fallback if parsing fails.
+    """
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback
+
+
+def safe_json_stringify(value: Any, fallback: str = "") -> str:
+    """
+    Safely converts a Python object into a JSON string.
+    Returns fallback if conversion fails.
+    """
+    try:
+        return json.dumps(value)
+    except Exception:
+        return fallback
+
+
+# -----------------------------
+# Dictionary / Nested access
+# -----------------------------
+def safe_get(obj: Any, path: str, fallback: Any = None) -> Any:
+    """
+    Safely access a nested dictionary value using dot-separated keys.
+    Returns fallback if any key is missing or if the path is invalid.
+    
+    Example:
+        user = {"profile": {"name": "Alex"}}
+        safe_get(user, "profile.name", "guest") -> "Alex"
+    """
+    try:
+        current = obj
+        for key in path.split("."):
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                return fallback
+        return current if current is not None else fallback
+    except Exception:
+        return fallback
+
+
+# -----------------------------
+# Safe Type Conversions
+# -----------------------------
+def safe_int(value: Any, fallback: int = 0) -> int:
+    """
+    Safely converts a value to int. Returns fallback on failure.
+    """
+    try:
+        return int(value)
+    except Exception:
+        return fallback
+
+
+def safe_float(value: Any, fallback: float = 0.0) -> float:
+    """
+    Safely converts a value to float. Returns fallback on failure.
+    """
+    try:
+        return float(value)
+    except Exception:
+        return fallback
+
+
+def safe_str(value: Any, fallback: str = "") -> str:
+    """
+    Safely converts a value to string. Returns fallback on failure.
+    """
+    try:
+        return str(value)
+    except Exception:
+        return fallback
+
+
+def safe_bool(value: Any, fallback: bool = False) -> bool:
+    """
+    Safely converts a value to boolean.
+    Accepts: True/False, "true"/"false", "1"/"0".
+    Returns fallback if value cannot be interpreted.
+    """
+    if isinstance(value, bool):
+        return value
+    if value in ("true", "True", "1"):
+        return True
+    if value in ("false", "False", "0"):
+        return False
+    return fallback
+
+
+# -----------------------------
+# Safe collection helpers
+# -----------------------------
+def safe_list(value: Any) -> list:
+    """
+    Ensures the value is a list. Returns empty list if not.
+    """
+    return value if isinstance(value, list) else []
+
+
+def safe_dict(value: Any) -> dict:
+    """
+    Ensures the value is a dictionary. Returns empty dict if not.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+# -----------------------------
+# Other Utilities
+# -----------------------------
+def sleep(ms: int = 0) -> None:
+    """
+    Sleep for a given number of milliseconds.
+    Exceptions are caught silently.
+    """
+    try:
+        time.sleep(ms / 1000)
+    except Exception:
+        pass
+
+
+def retry(fn: Callable, times: int = 3, fallback: Any = None) -> Any:
+    """
+    Retry a function multiple times. Returns fallback if all attempts fail.
+    """
+    for _ in range(times):
+        try:
+            return fn()
+        except Exception:
+            pass
+    return fallback
+
+
+def env(key: str, fallback: Any = None) -> Any:
+    """
+    Safely get an environment variable. Returns fallback if missing or error.
+    """
+    try:
+        return os.environ.get(key, fallback)
+    except Exception:
+        return fallback
+
+
+def is_empty(value: Any) -> bool:
+    """
+    Checks if a value is "empty".
+    Empty means: None, empty string, empty list, empty dict, empty tuple, or empty set.
+    """
+    if value is None:
+        return True
+    if isinstance(value, (str, list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+
+def safe_call(fn: Callable, *args, **kwargs) -> Any:
+    """
+    Calls a function with given arguments safely.
+    Returns None if an exception occurs.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        return None
+
