@@ -1,0 +1,25 @@
+from no_throw_utils import *
+
+# ΟΡΙΖΟΥΜΕ user
+user = {
+    "profile": {
+        "name": "Kostas"
+    }
+}
+
+data = safe_json_parse("{ bad json }")   # None
+age = safe_int("abc", 18)                # 18
+name = safe_get(user, "profile.name", "guest")
+sleep(500)
+
+# ΟΡΙΖΟΥΜΕ risky function
+def risky_function():
+    raise Exception("boom")
+
+result = retry(risky_function, times=5, fallback="failed")
+
+print(data)    # None
+print(age)     # 18
+print(name)    # Alex
+print(result)  # "failed"
+    
