@@ -1,5 +1,5 @@
-# no_throw_utils.py
-# =================
+# no_throw_utils.py (IMPROVED VERSION)
+# =====================================
 # Utilities that NEVER raise exceptions
 # Provides safe functions for JSON parsing, type casting, dict access,
 # retries, sleeping, environment variables, and general safe operations.
@@ -7,19 +7,44 @@
 import json
 import time
 import os
-from typing import Any, Callable
+import logging
+from typing import Any, Callable, Optional, Union, Dict, List, TypeVar
+from functools import wraps
+
+# Configure optional logging
+logger = logging.getLogger(__name__)
+
+T = TypeVar('T')
+
+# -----------------------------
+# Configuration
+# -----------------------------
+ENABLE_LOGGING = False  # Set to True to enable debug logging
+
+def _log_error(func_name: str, error: Exception) -> None:
+    """Internal function to log errors if logging is enabled."""
+    if ENABLE_LOGGING:
+        logger.debug(f"{func_name} failed: {type(error).__name__}: {str(error)}")
+
 
 # -----------------------------
 # Generic safe function wrapper
 # -----------------------------
-def safe(fn: Callable, fallback: Any = None) -> Any:
+def safe(fn: Callable[[], T], fallback: T = None) -> T:
     """
     Executes a function and returns its result.
     If an exception occurs, returns the fallback value instead.
+    
+    Examples:
+        >>> safe(lambda: 1/0, fallback=0)
+        0
+        >>> safe(lambda: int("abc"), fallback=-1)
+        -1
     """
     try:
         return fn()
-    except Exception:
+    except Exception as e:
+        _log_error("safe", e)
         return fallback
 
 
@@ -30,46 +55,117 @@ def safe_json_parse(value: str, fallback: Any = None) -> Any:
     """
     Safely parses a JSON string into a Python object.
     Returns fallback if parsing fails.
+    
+    Examples:
+        >>> safe_json_parse('{"name": "Alex"}', {})
+        {'name': 'Alex'}
+        >>> safe_json_parse('invalid json', {})
+        {}
     """
     try:
         return json.loads(value)
-    except Exception:
+    except Exception as e:
+        _log_error("safe_json_parse", e)
         return fallback
 
 
-def safe_json_stringify(value: Any, fallback: str = "") -> str:
+def safe_json_stringify(value: Any, fallback: str = "", indent: Optional[int] = None, ensure_ascii: bool = True) -> str:
     """
     Safely converts a Python object into a JSON string.
     Returns fallback if conversion fails.
+    
+    Args:
+        value: Object to convert
+        fallback: Value to return on failure
+        indent: JSON indentation (None for compact, 2 or 4 for pretty)
+        ensure_ascii: If False, allows Unicode characters
+    
+    Examples:
+        >>> safe_json_stringify({"name": "Alex"})
+        '{"name": "Alex"}'
+        >>> safe_json_stringify({"name": "Γιάννης"}, ensure_ascii=False)
+        '{"name": "Γιάννης"}'
     """
     try:
-        return json.dumps(value)
-    except Exception:
+        return json.dumps(value, indent=indent, ensure_ascii=ensure_ascii)
+    except Exception as e:
+        _log_error("safe_json_stringify", e)
         return fallback
 
 
 # -----------------------------
 # Dictionary / Nested access
 # -----------------------------
-def safe_get(obj: Any, path: str, fallback: Any = None) -> Any:
+def safe_get(obj: Any, path: str, fallback: Any = None, separator: str = ".") -> Any:
     """
-    Safely access a nested dictionary value using dot-separated keys.
+    Safely access a nested dictionary value using separator-separated keys.
     Returns fallback if any key is missing or if the path is invalid.
     
-    Example:
-        user = {"profile": {"name": "Alex"}}
-        safe_get(user, "profile.name", "guest") -> "Alex"
+    Args:
+        obj: Dictionary or nested structure
+        path: Dot-separated path (or custom separator)
+        fallback: Value to return if path not found
+        separator: Path separator (default: ".")
+    
+    Examples:
+        >>> user = {"profile": {"name": "Alex", "age": 25}}
+        >>> safe_get(user, "profile.name", "guest")
+        'Alex'
+        >>> safe_get(user, "profile.email", "no-email")
+        'no-email'
+        >>> safe_get(user, "profile/age", 0, separator="/")
+        25
     """
     try:
         current = obj
-        for key in path.split("."):
+        for key in path.split(separator):
             if isinstance(current, dict):
                 current = current.get(key)
+            elif isinstance(current, (list, tuple)) and key.isdigit():
+                # Support array indexing: "items.0.name"
+                index = int(key)
+                current = current[index] if 0 <= index < len(current) else None
             else:
                 return fallback
-        return current if current is not None else fallback
-    except Exception:
+            
+            if current is None:
+                return fallback
+        return current
+    except Exception as e:
+        _log_error("safe_get", e)
         return fallback
+
+
+def safe_set(obj: Dict, path: str, value: Any, separator: str = ".") -> bool:
+    """
+    Safely set a nested dictionary value using separator-separated keys.
+    Creates intermediate dictionaries if they don't exist.
+    Returns True if successful, False otherwise.
+    
+    Examples:
+        >>> data = {}
+        >>> safe_set(data, "user.profile.name", "Alex")
+        True
+        >>> data
+        {'user': {'profile': {'name': 'Alex'}}}
+    """
+    try:
+        if not isinstance(obj, dict):
+            return False
+        
+        keys = path.split(separator)
+        current = obj
+        
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current[key], dict):
+                current[key] = {}
+            current = current[key]
+        
+        current[keys[-1]] = value
+        return True
+    except Exception as e:
+        _log_error("safe_set", e)
+        return False
 
 
 # -----------------------------
@@ -78,63 +174,227 @@ def safe_get(obj: Any, path: str, fallback: Any = None) -> Any:
 def safe_int(value: Any, fallback: int = 0) -> int:
     """
     Safely converts a value to int. Returns fallback on failure.
+    Handles strings with whitespace and common number formats.
+    
+    Examples:
+        >>> safe_int("42", 0)
+        42
+        >>> safe_int("  100  ", 0)
+        100
+        >>> safe_int("abc", -1)
+        -1
+        >>> safe_int(3.7, 0)
+        3
     """
     try:
-        return int(value)
-    except Exception:
+        if isinstance(value, str):
+            value = value.strip()
+        return int(float(value))  # Handle "3.7" -> 3
+    except Exception as e:
+        _log_error("safe_int", e)
         return fallback
 
 
 def safe_float(value: Any, fallback: float = 0.0) -> float:
     """
     Safely converts a value to float. Returns fallback on failure.
+    
+    Examples:
+        >>> safe_float("3.14", 0.0)
+        3.14
+        >>> safe_float("abc", 0.0)
+        0.0
     """
     try:
+        if isinstance(value, str):
+            value = value.strip()
         return float(value)
-    except Exception:
+    except Exception as e:
+        _log_error("safe_float", e)
         return fallback
 
 
 def safe_str(value: Any, fallback: str = "") -> str:
     """
     Safely converts a value to string. Returns fallback on failure.
+    
+    Examples:
+        >>> safe_str(42, "")
+        '42'
+        >>> safe_str(None, "N/A")
+        'N/A'
     """
     try:
+        if value is None:
+            return fallback
         return str(value)
-    except Exception:
+    except Exception as e:
+        _log_error("safe_str", e)
         return fallback
 
 
 def safe_bool(value: Any, fallback: bool = False) -> bool:
     """
     Safely converts a value to boolean.
-    Accepts: True/False, "true"/"false", "1"/"0".
+    Accepts: True/False, "true"/"false", "yes"/"no", "1"/"0", 1/0
     Returns fallback if value cannot be interpreted.
+    
+    Examples:
+        >>> safe_bool("true")
+        True
+        >>> safe_bool("yes")
+        True
+        >>> safe_bool(1)
+        True
+        >>> safe_bool("false")
+        False
+        >>> safe_bool("no")
+        False
+        >>> safe_bool(0)
+        False
     """
     if isinstance(value, bool):
         return value
-    if value in ("true", "True", "1"):
-        return True
-    if value in ("false", "False", "0"):
-        return False
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        value_lower = value.lower().strip()
+        if value_lower in ("true", "yes", "1", "on"):
+            return True
+        if value_lower in ("false", "no", "0", "off"):
+            return False
     return fallback
 
 
 # -----------------------------
 # Safe collection helpers
 # -----------------------------
-def safe_list(value: Any) -> list:
+def safe_list(value: Any, fallback: Optional[List] = None) -> List:
     """
-    Ensures the value is a list. Returns empty list if not.
+    Ensures the value is a list. Returns fallback or empty list if not.
+    
+    Examples:
+        >>> safe_list([1, 2, 3])
+        [1, 2, 3]
+        >>> safe_list("not a list")
+        []
+        >>> safe_list(None, [0])
+        [0]
     """
-    return value if isinstance(value, list) else []
+    if isinstance(value, list):
+        return value
+    return fallback if fallback is not None else []
 
 
-def safe_dict(value: Any) -> dict:
+def safe_dict(value: Any, fallback: Optional[Dict] = None) -> Dict:
     """
-    Ensures the value is a dictionary. Returns empty dict if not.
+    Ensures the value is a dictionary. Returns fallback or empty dict if not.
+    
+    Examples:
+        >>> safe_dict({"key": "value"})
+        {'key': 'value'}
+        >>> safe_dict("not a dict")
+        {}
     """
-    return value if isinstance(value, dict) else {}
+    if isinstance(value, dict):
+        return value
+    return fallback if fallback is not None else {}
+
+
+def safe_len(value: Any, fallback: int = 0) -> int:
+    """
+    Safely get the length of a collection.
+    
+    Examples:
+        >>> safe_len([1, 2, 3])
+        3
+        >>> safe_len("hello")
+        5
+        >>> safe_len(None)
+        0
+    """
+    try:
+        return len(value)
+    except Exception as e:
+        _log_error("safe_len", e)
+        return fallback
+
+
+# -----------------------------
+# String utilities
+# -----------------------------
+def safe_split(value: str, separator: str = ",", fallback: Optional[List[str]] = None) -> List[str]:
+    """
+    Safely split a string. Returns fallback on failure.
+    
+    Examples:
+        >>> safe_split("a,b,c", ",")
+        ['a', 'b', 'c']
+        >>> safe_split(None, ",", [])
+        []
+    """
+    try:
+        if not isinstance(value, str):
+            return fallback if fallback is not None else []
+        return [item.strip() for item in value.split(separator)]
+    except Exception as e:
+        _log_error("safe_split", e)
+        return fallback if fallback is not None else []
+
+
+def safe_join(items: List[Any], separator: str = ", ", fallback: str = "") -> str:
+    """
+    Safely join items into a string.
+    
+    Examples:
+        >>> safe_join([1, 2, 3], "-")
+        '1-2-3'
+        >>> safe_join(None, ",")
+        ''
+    """
+    try:
+        if not isinstance(items, (list, tuple)):
+            return fallback
+        return separator.join(str(item) for item in items)
+    except Exception as e:
+        _log_error("safe_join", e)
+        return fallback
+
+
+# -----------------------------
+# File I/O utilities
+# -----------------------------
+def safe_read_file(filepath: str, fallback: str = "", encoding: str = "utf-8") -> str:
+    """
+    Safely read a file. Returns fallback if file doesn't exist or error occurs.
+    
+    Examples:
+        >>> safe_read_file("config.txt", "default config")
+        'file contents...'  # or "default config" if file doesn't exist
+    """
+    try:
+        with open(filepath, "r", encoding=encoding) as f:
+            return f.read()
+    except Exception as e:
+        _log_error("safe_read_file", e)
+        return fallback
+
+
+def safe_write_file(filepath: str, content: str, encoding: str = "utf-8") -> bool:
+    """
+    Safely write to a file. Returns True if successful, False otherwise.
+    
+    Examples:
+        >>> safe_write_file("output.txt", "Hello World")
+        True
+    """
+    try:
+        with open(filepath, "w", encoding=encoding) as f:
+            f.write(content)
+        return True
+    except Exception as e:
+        _log_error("safe_write_file", e)
+        return False
 
 
 # -----------------------------
@@ -144,41 +404,110 @@ def sleep(ms: int = 0) -> None:
     """
     Sleep for a given number of milliseconds.
     Exceptions are caught silently.
+    
+    Examples:
+        >>> sleep(1000)  # Sleep for 1 second
     """
     try:
         time.sleep(ms / 1000)
-    except Exception:
-        pass
+    except Exception as e:
+        _log_error("sleep", e)
 
 
-def retry(fn: Callable, times: int = 3, fallback: Any = None) -> Any:
+def retry(
+    fn: Callable[[], T],
+    times: int = 3,
+    delay_ms: int = 0,
+    fallback: T = None,
+    exponential_backoff: bool = False
+) -> T:
     """
     Retry a function multiple times. Returns fallback if all attempts fail.
+    
+    Args:
+        fn: Function to retry
+        times: Number of attempts
+        delay_ms: Delay between retries in milliseconds
+        fallback: Value to return if all attempts fail
+        exponential_backoff: If True, double delay after each failure
+    
+    Examples:
+        >>> def flaky_api():
+        ...     return requests.get("https://api.example.com/data").json()
+        >>> data = retry(flaky_api, times=5, delay_ms=1000, fallback={})
     """
-    for _ in range(times):
+    current_delay = delay_ms
+    for attempt in range(times):
         try:
             return fn()
-        except Exception:
-            pass
+        except Exception as e:
+            _log_error(f"retry (attempt {attempt + 1}/{times})", e)
+            if attempt < times - 1 and current_delay > 0:
+                sleep(current_delay)
+                if exponential_backoff:
+                    current_delay *= 2
     return fallback
 
 
-def env(key: str, fallback: Any = None) -> Any:
+def env(key: str, fallback: Any = None, convert_type: Optional[type] = None) -> Any:
     """
     Safely get an environment variable. Returns fallback if missing or error.
+    Optionally converts to a specific type.
+    
+    Args:
+        key: Environment variable name
+        fallback: Default value if not found
+        convert_type: Type to convert to (int, float, bool, etc.)
+    
+    Examples:
+        >>> env("PORT", 8000, int)
+        8000
+        >>> env("DEBUG", False, bool)
+        False
+        >>> env("API_KEY", "default-key")
+        'your-api-key'
     """
     try:
-        return os.environ.get(key, fallback)
-    except Exception:
+        value = os.environ.get(key)
+        if value is None:
+            return fallback
+        
+        if convert_type is None:
+            return value
+        
+        if convert_type == int:
+            return safe_int(value, fallback)
+        elif convert_type == float:
+            return safe_float(value, fallback)
+        elif convert_type == bool:
+            return safe_bool(value, fallback)
+        else:
+            return convert_type(value)
+    except Exception as e:
+        _log_error("env", e)
         return fallback
 
 
 def is_empty(value: Any) -> bool:
     """
     Checks if a value is "empty".
-    Empty means: None, empty string, empty list, empty dict, empty tuple, or empty set.
+    Empty means: None, empty string, empty list, empty dict, empty tuple, empty set, or 0.
+    
+    Examples:
+        >>> is_empty(None)
+        True
+        >>> is_empty("")
+        True
+        >>> is_empty([])
+        True
+        >>> is_empty({})
+        True
+        >>> is_empty(0)
+        True
+        >>> is_empty("hello")
+        False
     """
-    if value is None:
+    if value is None or value == 0:
         return True
     if isinstance(value, (str, list, dict, tuple, set)):
         return len(value) == 0
@@ -189,9 +518,108 @@ def safe_call(fn: Callable, *args, **kwargs) -> Any:
     """
     Calls a function with given arguments safely.
     Returns None if an exception occurs.
+    
+    Examples:
+        >>> safe_call(int, "123")
+        123
+        >>> safe_call(int, "abc")
+        None
     """
     try:
         return fn(*args, **kwargs)
-    except Exception:
+    except Exception as e:
+        _log_error("safe_call", e)
         return None
 
+
+def clamp(value: Union[int, float], min_val: Union[int, float], max_val: Union[int, float]) -> Union[int, float]:
+    """
+    Clamp a value between min and max.
+    
+    Examples:
+        >>> clamp(5, 0, 10)
+        5
+        >>> clamp(-5, 0, 10)
+        0
+        >>> clamp(15, 0, 10)
+        10
+    """
+    try:
+        return max(min_val, min(value, max_val))
+    except Exception:
+        return value
+
+
+def coalesce(*values: Any) -> Any:
+    """
+    Returns the first non-None, non-empty value.
+    
+    Examples:
+        >>> coalesce(None, "", "default")
+        'default'
+        >>> coalesce(None, 0, 42)
+        0
+        >>> coalesce(None, None, "found")
+        'found'
+    """
+    for value in values:
+        if not is_empty(value):
+            return value
+    return None
+
+
+# -----------------------------
+# Decorators
+# -----------------------------
+def safe_function(fallback: Any = None):
+    """
+    Decorator to make any function safe (never raises exceptions).
+    
+    Examples:
+        >>> @safe_function(fallback=[])
+        >>> def get_items():
+        ...     return risky_operation()
+    """
+    def decorator(fn: Callable) -> Callable:
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                _log_error(fn.__name__, e)
+                return fallback
+        return wrapper
+    return decorator
+
+
+# -----------------------------
+# Module configuration
+# -----------------------------
+def enable_logging(enable: bool = True) -> None:
+    """
+    Enable or disable debug logging for safe utilities.
+    
+    Examples:
+        >>> enable_logging(True)
+        >>> safe_int("abc", 0)  # Will log the error
+    """
+    global ENABLE_LOGGING
+    ENABLE_LOGGING = enable
+    if enable:
+        logging.basicConfig(level=logging.DEBUG)
+
+
+# -----------------------------
+# Export all public functions
+# -----------------------------
+__all__ = [
+    'safe', 'safe_json_parse', 'safe_json_stringify',
+    'safe_get', 'safe_set',
+    'safe_int', 'safe_float', 'safe_str', 'safe_bool',
+    'safe_list', 'safe_dict', 'safe_len',
+    'safe_split', 'safe_join',
+    'safe_read_file', 'safe_write_file',
+    'sleep', 'retry', 'env',
+    'is_empty', 'safe_call', 'clamp', 'coalesce',
+    'safe_function', 'enable_logging'
+]
